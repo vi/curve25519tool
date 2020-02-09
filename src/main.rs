@@ -32,6 +32,9 @@ enum Cmd {
   Donna(Donna),
   Sign(Sign),
   Verify(Verify),
+  Curve2Ed(Curve2Ed),
+  Ed2Curve(Ed2Curve),
+  ExpandEd(ExpandEd),
 }
 
 /// Generate new private curve25519 or ed25519 key and print it as hex to stdout
@@ -90,6 +93,40 @@ struct Verify {
     #[argh(positional,from_str_fn(readhex64))]
     signature: [u8; 64],
 }
+
+/// Convert MontgomeryPoint to CompressedEdwardsY point
+#[derive(FromArgs)]
+#[argh(subcommand, name = "curve2ed")]
+struct Curve2Ed {
+    #[argh(positional,from_str_fn(readhex32))]
+    point: [u8; 32],
+
+    /// use 1 for sign instead of 0
+    #[argh(option)]
+    sign: bool,
+}
+
+/// Extract private key from ed25519 seed value (read from stdin)
+#[derive(FromArgs)]
+#[argh(subcommand, name = "expand_ed")]
+struct ExpandEd {
+    /// print 64 bytes instead of 32
+    #[argh(switch)]
+    also_seed: bool,
+
+    /// print public ed25519 key instead of secret one
+    #[argh(switch)]
+    pubkey: bool,
+}
+
+/// Convert CompressedEdwardsY to MontgomeryPoint and a sign (0 or 1), space-separated
+#[derive(FromArgs)]
+#[argh(subcommand, name = "ed2curve")]
+struct Ed2Curve {
+    #[argh(positional,from_str_fn(readhex32))]
+    point: [u8; 32],
+}
+
 
 fn readhex32(x:&str) -> std::result::Result<[u8;32], String> {
     use std::convert::TryInto;
@@ -237,6 +274,48 @@ fn main() -> Result<()> {
                 let pk = EdPublicKey::from_bytes(pk.as_bytes()).unwrap();
                 if let Err(_) = pk.verify::<sha2::Sha512>(&buf[..], &s) {
                     Err("Signature verification failed")?;
+                }
+            }
+        }
+        Cmd::Curve2Ed(x) => {
+            #[cfg(feature="donna")] {
+                Err("Curve25519tool is built without this feature")?
+            }
+            #[cfg(feature="dalek")] {
+                let pk = curve25519_dalek::montgomery::MontgomeryPoint(x.point);
+                let pk = pk.to_edwards(if x.sign { 1 } else { 0 }).unwrap().compress();
+                println!("{}", hex::encode(pk.as_bytes()));
+            }
+        }
+        Cmd::Ed2Curve(x) => {
+            #[cfg(feature="donna")] {
+                Err("Curve25519tool is built without this feature")?
+            }
+            #[cfg(feature="dalek")] {
+                let sign = x.point[31] & 0x80 != 0;
+                let pk = curve25519_dalek::edwards::CompressedEdwardsY(x.point);
+                let pk = pk.decompress().ok_or("Something wrong with your point")?.to_montgomery();
+                println!("{} sign {}", hex::encode(pk.as_bytes()), if sign { 1 } else { 0 });
+            }
+        }
+        Cmd::ExpandEd(x) => {
+            #[cfg(feature="donna")] {
+                Err("Curve25519tool is built without this feature")?
+            }
+            #[cfg(feature="dalek")] {
+                let pkbuf = read32fromstdin()?;
+                let pk = ed25519_dalek::SecretKey::from_bytes(&pkbuf[..]).unwrap();
+                let pk = pk.expand::<sha2::Sha512>();
+                if x.pubkey {
+                    let pubk = EdPublicKey::from_expanded_secret(&pk);
+                    println!("{}", hex::encode(&pubk.to_bytes()[..]));
+                } else {
+                    let pk = pk.to_bytes();
+                    if x.also_seed {
+                        println!("{}", hex::encode(&pk[..]));
+                    } else {
+                        println!("{}", hex::encode(&pk[0..32]));
+                    }
                 }
             }
         }
