@@ -81,6 +81,22 @@ struct Sign {
     /// override random seed used for making a signature
     #[argh(option,from_str_fn(readhex64))]
     random: Option<[u8; 64]>,
+
+    /// use ed25519 seed value instead of curve25519 point for signing
+    #[argh(switch)]
+    ed: bool,
+
+    /// don't set high bit in signature even with --negative to make signature compatible
+    #[argh(switch)]
+    no_sign_bit: bool,
+
+    /// use sign bit in signature even in --ed mode, to allow verification with a curve25519 key
+    #[argh(switch)]
+    use_sign_bit: bool,
+
+    /// assume ed25519 key should be negative when given a curve25515 point as a privkey
+    #[argh(switch)]
+    negative: bool,
 }
 
 /// Verify signature of data supplied to stdin
@@ -92,6 +108,14 @@ struct Verify {
 
     #[argh(positional,from_str_fn(readhex64))]
     signature: [u8; 64],
+
+    /// expect pubkey in ed25519 format instead of curve25519 and fail if signautre contains a sign.
+    #[argh(switch)]
+    ed: bool,
+
+    /// treat supplied curve25519 key as negative even if high bit in signature is not set
+    #[argh(switch)]
+    negative: bool,
 }
 
 /// Convert MontgomeryPoint to CompressedEdwardsY point
@@ -103,16 +127,16 @@ struct Curve2Ed {
 
     /// use 1 for sign instead of 0
     #[argh(option)]
-    sign: bool,
+    negative: bool,
 }
 
-/// Extract private key from ed25519 seed value (read from stdin)
+/// Extract private or public key from ed25519 seed value (read from stdin)
 #[derive(FromArgs)]
 #[argh(subcommand, name = "expand_ed")]
 struct ExpandEd {
     /// print 64 bytes instead of 32
     #[argh(switch)]
-    also_seed: bool,
+    also_nonce: bool,
 
     /// print public ed25519 key instead of secret one
     #[argh(switch)]
@@ -232,23 +256,58 @@ fn main() -> Result<()> {
             let mut buf = Vec::with_capacity(4096);
             std::io::stdin().read_to_end(&mut buf)?;
             #[cfg(feature="donna")] {
+                if s.ed || s.negative || s.no_sign_bit || s.use_sign_bit {
+                    Err("Curve25519tool is built without this feature")?
+                }
                 let signat = sign(&pkbuf,&buf[..],&rnd).ok_or("sign failed")?;
                 println!("{}", hex::encode(&signat[..]));
             }
             #[cfg(feature="dalek")] {
-                let mut pkbuf2 = [0u8; 64];
-                pkbuf2[0..32].copy_from_slice(&pkbuf[..]);
-                pkbuf2[32..64].copy_from_slice(&rnd[0..32]);
-                let pk = EdSecretKey::from_bytes(&pkbuf2[..]).unwrap();
-                
+                let privk;
+                let pubkey;
 
-                let pubk = PublicKey::from(&StaticSecret::from(pkbuf));
-                let pubk = curve25519_dalek::montgomery::MontgomeryPoint(*pubk.as_bytes());
-                let pubk = pubk.to_edwards(0).unwrap().compress();
-                let pubk = EdPublicKey::from_bytes(pubk.as_bytes()).unwrap();
+                let negative : bool; 
 
-                let s = pk.sign::<sha2::Sha512>(&buf[..], &pubk);
-                println!("{}", hex::encode(&s.to_bytes()[..]));
+                if s.ed {
+                    if s.no_sign_bit {
+                        Err("--no-sign-bit is not meaningful with --ed")?
+                    }
+                    if s.negative {
+                        Err("--negative is not meaningful with --ed")?
+                    }
+                    if s.random.is_some() {
+                        Err("--random is not meaningful with --ed")?
+                    }
+                    let k = ed25519_dalek::SecretKey::from_bytes(&pkbuf[..]).unwrap();
+                    privk = k.expand::<sha2::Sha512>();
+                    pubkey = EdPublicKey::from_expanded_secret(&privk);
+                    negative = pubkey.as_bytes()[31] & 0x80 != 0;
+                } else {
+                    if s.use_sign_bit {
+                        Err("--use-sign-bit is already on without --ed")?
+                    }
+                    negative = s.negative;
+                    let mut pkbuf2 = [0u8; 64];
+                    pkbuf2[0..32].copy_from_slice(&pkbuf[..]);
+                    pkbuf2[32..64].copy_from_slice(&rnd[0..32]);
+                    privk = EdSecretKey::from_bytes(&pkbuf2[..]).unwrap();
+                    
+                    let pubk = PublicKey::from(&StaticSecret::from(pkbuf));
+                    let pubk = curve25519_dalek::montgomery::MontgomeryPoint(*pubk.as_bytes());
+                    let pubk = pubk.to_edwards(if negative { 1 } else { 0 }).unwrap().compress();
+                    pubkey = EdPublicKey::from_bytes(pubk.as_bytes()).unwrap();
+                }
+
+                let signat = privk.sign::<sha2::Sha512>(&buf[..], &pubkey);
+                let mut signat = signat.to_bytes();
+
+                if negative {
+                    if (s.ed && s.use_sign_bit) || (!s.ed && !s.no_sign_bit) {
+                        signat[63] |= 0x80;
+                    }
+                }
+
+                println!("{}", hex::encode(&signat[..]));
             }
         }
         Cmd::Verify(v) => {
@@ -256,23 +315,43 @@ fn main() -> Result<()> {
             std::io::stdin().read_to_end(&mut buf)?;
 
             #[cfg(feature="donna")] {
+                if s.ed || s.negative {
+                    Err("Curve25519tool is built without this feature")?
+                }
                 if ! verify(&v.signature, &v.pubkey, &buf[..]) {
                     Err("Signature verification failed")?;
                 }
             }
             #[cfg(feature="dalek")] {
                 let mut sbuf = v.signature;
-                let sign = if sbuf[63] & 0x80 != 0 {
+                let mut sign = if sbuf[63] & 0x80 != 0 {
+                    if v.ed {
+                        Err("Signature contains a sign bit, which is not meaningul in --ed mode")?
+                    }
                     sbuf[63] &= 0x7F;
                     1
                 } else {
                     0
                 };
                 let s = Signature::from_bytes(&sbuf[..]).map_err(|e|format!("{}",e))?;
-                let pk = curve25519_dalek::montgomery::MontgomeryPoint(v.pubkey);
-                let pk = pk.to_edwards(sign).unwrap().compress();
-                let pk = EdPublicKey::from_bytes(pk.as_bytes()).unwrap();
-                if let Err(_) = pk.verify::<sha2::Sha512>(&buf[..], &s) {
+                let pubkey;
+
+                if v.negative {
+                    sign = 1;
+                }
+                
+                if v.ed {
+                    if v.negative {
+                        Err("--negative is not meaningful with --ed")?
+                    }
+                    pubkey = EdPublicKey::from_bytes(&v.pubkey[..]).unwrap();
+                } else {
+                    let pk = curve25519_dalek::montgomery::MontgomeryPoint(v.pubkey);
+                    let pk = pk.to_edwards(sign).unwrap().compress();
+                    pubkey = EdPublicKey::from_bytes(pk.as_bytes()).unwrap();
+                }
+
+                if let Err(_) = pubkey.verify::<sha2::Sha512>(&buf[..], &s) {
                     Err("Signature verification failed")?;
                 }
             }
@@ -283,7 +362,7 @@ fn main() -> Result<()> {
             }
             #[cfg(feature="dalek")] {
                 let pk = curve25519_dalek::montgomery::MontgomeryPoint(x.point);
-                let pk = pk.to_edwards(if x.sign { 1 } else { 0 }).unwrap().compress();
+                let pk = pk.to_edwards(if x.negative { 1 } else { 0 }).unwrap().compress();
                 println!("{}", hex::encode(pk.as_bytes()));
             }
         }
@@ -311,7 +390,7 @@ fn main() -> Result<()> {
                     println!("{}", hex::encode(&pubk.to_bytes()[..]));
                 } else {
                     let pk = pk.to_bytes();
-                    if x.also_seed {
+                    if x.also_nonce {
                         println!("{}", hex::encode(&pk[..]));
                     } else {
                         println!("{}", hex::encode(&pk[0..32]));
