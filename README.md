@@ -50,3 +50,4 @@ This allows using the same pubkey for Diffie-Hellman, encryption and signing.
 
 Support for usual ed25519 keys is also provided.
 
+Version 0.1 is based on curve25519-donna and "ref10" ed25519 implementation, version 0.2 defaults to "dalek" implementation.
