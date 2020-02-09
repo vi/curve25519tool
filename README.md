@@ -7,7 +7,7 @@ There are pre-built executables on Github Releases.
 
 ```
 $ curve25519tool --help
-Usage: curve25519tool <command> [<args>]
+Usage: target/debug/curve25519tool <command> [<args>]
 
 Use curve25519 and ed25519 from command line
 
@@ -15,7 +15,7 @@ Options:
   --help            display usage information
 
 Commands:
-  gen               Generate new private curve25519 key and print it
+  gen               Generate new private curve25519 or ed25519 key and print it
                     as hex to stdout
   massage           Set and clear bits from a 32-byte hex string specified on
                     stdin for it to be suitable x25519 private key
@@ -25,6 +25,11 @@ Commands:
                     argument, then print shared key as hex to stdout
   sign              Sign stdin data using private key read from specified file
   verify            Verify signature of data supplied to stdin
+  curve2ed          Convert MontgomeryPoint to CompressedEdwardsY point
+  ed2curve          Convert CompressedEdwardsY to MontgomeryPoint and a sign (0
+                    or 1), space-separated
+  expand_ed         Extract private key from ed25519 seed value (read from
+                    stdin)
 
 $ curve25519tool gen
 6071c98d7db4d7fead9b9409c06aa39d691c6065d584d2bc2127fb5ecfa18d64
@@ -42,3 +47,6 @@ Currently signing slightly differs from a typical ed25519:
 * Typically unused highest bit of a signature stores sign bit to help to convert curve25519 pubkey to a ed25519 pubkey.
 
 This allows using the same pubkey for Diffie-Hellman, encryption and signing.
+
+Support for usual ed25519 keys is also provided.
+
