@@ -1,6 +1,18 @@
 use argh::FromArgs;
 
+#[cfg(not(any(feature="donna",feature="dalek")))]
+compile_error!("Please enable either `donna` or `dalek` crate feature");
+
+#[cfg(all(feature="donna",feature="dalek"))]
+compile_error!("Please enable only one of `donna` or `dalek` crate features");
+
+#[cfg(feature="donna")]
 use elliptic::curve25519::{donna,keygen,sign,verify};
+
+#[cfg(feature="dalek")]
+use x25519_dalek::{StaticSecret,PublicKey};
+#[cfg(feature="dalek")]
+use ed25519_dalek::{PublicKey as EdPublicKey,Signature, ExpandedSecretKey as EdSecretKey};
 
 /// Use curve25519 and ed25519 from command line
 #[derive(FromArgs)]
@@ -148,12 +160,29 @@ fn main() -> Result<()> {
         }
         Cmd::Keygen(_) => {
             let pkbuf = read32fromstdin()?;
-            let buf = keygen(&pkbuf);
+            let buf : [u8;32];
+            #[cfg(feature="donna")] {
+                buf = keygen(&pkbuf);
+            }
+            #[cfg(feature="dalek")] {
+                let pk = StaticSecret::from(pkbuf);
+                let pubk = PublicKey::from(&pk);
+                buf = *pubk.as_bytes();
+            }
             println!("{}", hex::encode(&buf[..]));
         }
         Cmd::Donna(d) => {
             let pkbuf = read32fromstdin()?;
-            let buf = donna(&pkbuf, &d.pubkey).ok_or("donna failed")?;
+            let buf : [u8;32];
+            #[cfg(feature="donna")] {
+                buf = donna(&pkbuf, &d.pubkey).ok_or("donna failed")?;
+            }
+            #[cfg(feature="dalek")] {
+                let pk = StaticSecret::from(pkbuf);
+                let pubk = PublicKey::from(d.pubkey);
+                let sh = pk.diffie_hellman(&pubk);
+                buf = *sh.as_bytes();
+            }
             println!("{}", hex::encode(&buf[..]));
         }
         Cmd::Sign(s) => {
@@ -165,16 +194,50 @@ fn main() -> Result<()> {
             let pkbuf = read32fromfile(s.privkey_file)?;
             let mut buf = Vec::with_capacity(4096);
             std::io::stdin().read_to_end(&mut buf)?;
+            #[cfg(feature="donna")] {
+                let signat = sign(&pkbuf,&buf[..],&rnd).ok_or("sign failed")?;
+                println!("{}", hex::encode(&signat[..]));
+            }
+            #[cfg(feature="dalek")] {
+                let mut pkbuf2 = [0u8; 64];
+                pkbuf2[0..32].copy_from_slice(&pkbuf[..]);
+                pkbuf2[32..64].copy_from_slice(&rnd[0..32]);
+                let pk = EdSecretKey::from_bytes(&pkbuf2[..]).unwrap();
+                
 
-            let signat = sign(&pkbuf,&buf[..],&rnd).ok_or("sign failed")?;
-            println!("{}", hex::encode(&signat[..]));
+                let pubk = PublicKey::from(&StaticSecret::from(pkbuf));
+                let pubk = curve25519_dalek::montgomery::MontgomeryPoint(*pubk.as_bytes());
+                let pubk = pubk.to_edwards(0).unwrap().compress();
+                let pubk = EdPublicKey::from_bytes(pubk.as_bytes()).unwrap();
+
+                let s = pk.sign::<sha2::Sha512>(&buf[..], &pubk);
+                println!("{}", hex::encode(&s.to_bytes()[..]));
+            }
         }
         Cmd::Verify(v) => {
             let mut buf = Vec::with_capacity(4096);
             std::io::stdin().read_to_end(&mut buf)?;
 
-            if ! verify(&v.signature, &v.pubkey, &buf[..]) {
-                Err("Signature verification failed")?;
+            #[cfg(feature="donna")] {
+                if ! verify(&v.signature, &v.pubkey, &buf[..]) {
+                    Err("Signature verification failed")?;
+                }
+            }
+            #[cfg(feature="dalek")] {
+                let mut sbuf = v.signature;
+                let sign = if sbuf[63] & 0x80 != 0 {
+                    sbuf[63] &= 0x7F;
+                    1
+                } else {
+                    0
+                };
+                let s = Signature::from_bytes(&sbuf[..]).map_err(|e|format!("{}",e))?;
+                let pk = curve25519_dalek::montgomery::MontgomeryPoint(v.pubkey);
+                let pk = pk.to_edwards(sign).unwrap().compress();
+                let pk = EdPublicKey::from_bytes(pk.as_bytes()).unwrap();
+                if let Err(_) = pk.verify::<sha2::Sha512>(&buf[..], &s) {
+                    Err("Signature verification failed")?;
+                }
             }
         }
     }
