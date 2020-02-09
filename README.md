@@ -40,3 +40,5 @@ Currently signing slightly differs from a typical ed25519:
 
 * Randomness is not derived from a hash of a seed. It can be specified explicitly. Private curve25519 point is used explicitly instead of deriving one from a hash
 * Typically unused highest bit of a signature stores sign bit to help to convert curve25519 pubkey to a ed25519 pubkey.
+
+This allows using the same pubkey for Diffie-Hellman, encryption and signing.
