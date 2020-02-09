@@ -15,7 +15,7 @@ Options:
   --help            display usage information
 
 Commands:
-  gen               Generate new private curve25519 or ed25519 key and print it
+  gen               Generate new private curve25519 key and print it
                     as hex to stdout
   massage           Set and clear bits from a 32-byte hex string specified on
                     stdin for it to be suitable x25519 private key
@@ -36,4 +36,7 @@ $ echo 6071c98d7db4d7fead9b9409c06aa39d691c6065d584d2bc2127fb5ecfa18d64 | curve2
 f36adf3861d5b0e8ea1e999368f4a558832ed8b4b44accc337848ec847bf5779
 ```
 
-Signing ed25519 keys are converted from curve25519 keys, it seems.
+Currently signing slightly differs from a typical ed25519:
+
+* Randomness is not derived from a hash of a seed. It can be specified explicitly. Private curve25519 point is used explicitly instead of deriving one from a hash
+* Typically unused highest bit of a signature stores sign bit to help to convert curve25519 pubkey to a ed25519 pubkey.
