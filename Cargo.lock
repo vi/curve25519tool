@@ -142,6 +142,7 @@ version = "0.2.0"
 dependencies = [
  "argh",
  "arrayref",
+ "clear_on_drop",
  "curve25519-dalek 2.0.0",
  "ed25519-dalek",
  "elliptic",
