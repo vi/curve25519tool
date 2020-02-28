@@ -35,6 +35,7 @@ enum Cmd {
   Curve2Ed(Curve2Ed),
   Ed2Curve(Ed2Curve),
   ExpandEd(ExpandEd),
+  ScalarCommand(ScalarCommand),
 }
 
 /// Generate new private curve25519 or ed25519 key and print it as hex to stdout
@@ -150,6 +151,117 @@ struct Ed2Curve {
     #[argh(positional,from_str_fn(readhex32))]
     point: [u8; 32],
 }
+
+
+/// Subcommands involving scalars or add/sub
+#[derive(FromArgs)]
+#[argh(subcommand, name = "scalar")]
+struct ScalarCommand {
+   #[argh(subcommand)]
+   cmd: ScalarCmd,
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand)]
+enum ScalarCmd {
+  ScalarCanonicalize(ScalarCanonicalize),
+  ScalarInvert(ScalarInvert),
+  ScalarMul(ScalarMul),
+  ScalarAdd(ScalarAdd),
+  ScalarSub(ScalarSub),
+  ScalarMontMul(ScalarMontMul),
+  ScalarEdMul(ScalarEdMul),
+  EdAdd(EdAdd),
+  EdSub(EdSub),
+}
+
+/// Read 32 or 64 bytes and output 32 bytes of a canonical `curve25519_dalek::scalar::Scalar`
+#[derive(FromArgs)]
+#[argh(subcommand, name = "canonicalize")]
+struct ScalarCanonicalize {
+    #[argh(positional)]
+    scalaresque: String,
+}
+
+/// Invert given nonzero canonical scalar value with a modulo
+#[derive(FromArgs)]
+#[argh(subcommand, name = "invert")]
+struct ScalarInvert {
+    #[argh(positional,from_str_fn(readhex32))]
+    scalar: [u8; 32],
+}
+
+/// Multiply two given scalars with a modulo
+#[derive(FromArgs)]
+#[argh(subcommand, name = "mul")]
+struct ScalarMul {
+    #[argh(positional,from_str_fn(readhex32))]
+    scalar1: [u8; 32],
+    #[argh(positional,from_str_fn(readhex32))]
+    scalar2: [u8; 32],
+}
+
+/// Add two given canonical scalaras, with a modulo
+#[derive(FromArgs)]
+#[argh(subcommand, name = "add")]
+struct ScalarAdd {
+    #[argh(positional,from_str_fn(readhex32))]
+    scalar1: [u8; 32],
+    #[argh(positional,from_str_fn(readhex32))]
+    scalar2: [u8; 32],
+}
+
+/// Subtract two given canonical scalaras, modulo
+#[derive(FromArgs)]
+#[argh(subcommand, name = "sub")]
+struct ScalarSub {
+    #[argh(positional,from_str_fn(readhex32))]
+    scalar1: [u8; 32],
+    #[argh(positional,from_str_fn(readhex32))]
+    scalar2: [u8; 32],
+}
+
+
+/// Multiply given scalar by a curve25519 (Montgomery) point, outputting a point
+#[derive(FromArgs)]
+#[argh(subcommand, name = "mul_mont")]
+struct ScalarMontMul {
+    #[argh(positional,from_str_fn(readhex32))]
+    scalar: [u8; 32],
+    #[argh(positional,from_str_fn(readhex32))]
+    point: [u8; 32],
+}
+
+/// Multiply given scalar by a ed25519 (Edwards) point, outputting a point
+#[derive(FromArgs)]
+#[argh(subcommand, name = "mul_ed")]
+struct ScalarEdMul {
+    #[argh(positional,from_str_fn(readhex32))]
+    scalar: [u8; 32],
+    #[argh(positional,from_str_fn(readhex32))]
+    point: [u8; 32],
+}
+
+/// Add two ed25519 points
+#[derive(FromArgs)]
+#[argh(subcommand, name = "add_ed")]
+struct EdAdd {
+    #[argh(positional,from_str_fn(readhex32))]
+    point1: [u8; 32],
+    #[argh(positional,from_str_fn(readhex32))]
+    point2: [u8; 32],
+}
+
+/// Subtract two ed25519 points
+#[derive(FromArgs)]
+#[argh(subcommand, name = "sub_ed")]
+struct EdSub {
+    #[argh(positional,from_str_fn(readhex32))]
+    point1: [u8; 32],
+    #[argh(positional,from_str_fn(readhex32))]
+    point2: [u8; 32],
+}
+
 
 
 fn readhex32(x:&str) -> std::result::Result<[u8;32], String> {
@@ -394,6 +506,80 @@ fn main() -> Result<()> {
                         println!("{}", hex::encode(&pk[..]));
                     } else {
                         println!("{}", hex::encode(&pk[0..32]));
+                    }
+                }
+            }
+        }
+        Cmd::ScalarCommand(scmd) => {
+            #[cfg(feature="donna")] {
+                Err("Curve25519tool is built without this feature")?
+            }
+            #[cfg(feature="dalek")] {
+                match scmd.cmd {
+                    ScalarCmd::ScalarCanonicalize(x) => {
+                        if x.scalaresque.len() > 128 {
+                            Err("Scalar value is too big")?;
+                        }
+                        let b = hex::decode(&x.scalaresque)?;
+                        let mut bb = [0u8; 64];
+                        bb[0..b.len()].copy_from_slice(&b[..]);
+                        let s = curve25519_dalek::scalar::Scalar::from_bytes_mod_order_wide(&bb);
+                        println!("{}", hex::encode(&s.to_bytes()[..]));
+                    }
+                    ScalarCmd::ScalarInvert(x) => {
+                        let s = curve25519_dalek::scalar::Scalar::from_canonical_bytes(x.scalar).ok_or("Non-canonical scalar specified")?;
+                        let s = s.invert();
+                        println!("{}", hex::encode(&s.to_bytes()[..]));
+                        if x.scalar == [0u8; 32] {
+                            std::process::exit(1);
+                        }
+                    }
+                    ScalarCmd::ScalarMul(x) => {
+                        let s1 = curve25519_dalek::scalar::Scalar::from_canonical_bytes(x.scalar1).ok_or("Non-canonical scalar specified")?;
+                        let s2 = curve25519_dalek::scalar::Scalar::from_canonical_bytes(x.scalar2).ok_or("Non-canonical scalar specified")?;
+                        let s = s1 * s2;
+                        println!("{}", hex::encode(&s.to_bytes()[..]));
+                    }
+                    ScalarCmd::ScalarAdd(x) => {
+                        let s1 = curve25519_dalek::scalar::Scalar::from_canonical_bytes(x.scalar1).ok_or("Non-canonical scalar specified")?;
+                        let s2 = curve25519_dalek::scalar::Scalar::from_canonical_bytes(x.scalar2).ok_or("Non-canonical scalar specified")?;
+                        let s = s1 + s2;
+                        println!("{}", hex::encode(&s.to_bytes()[..]));
+                    }
+                    ScalarCmd::ScalarSub(x) => {
+                        let s1 = curve25519_dalek::scalar::Scalar::from_canonical_bytes(x.scalar1).ok_or("Non-canonical scalar specified")?;
+                        let s2 = curve25519_dalek::scalar::Scalar::from_canonical_bytes(x.scalar2).ok_or("Non-canonical scalar specified")?;
+                        let s = s1 - s2;
+                        println!("{}", hex::encode(&s.to_bytes()[..]));
+                    }
+                    ScalarCmd::ScalarMontMul(x) => {
+                        let s = curve25519_dalek::scalar::Scalar::from_canonical_bytes(x.scalar).ok_or("Non-canonical scalar specified")?;
+                        let p = curve25519_dalek::montgomery::MontgomeryPoint(x.point);
+                        let p2 = p * s;
+                        println!("{}", hex::encode(&p2.to_bytes()[..]));
+                    }
+                    ScalarCmd::ScalarEdMul(x) => {
+                        let s = curve25519_dalek::scalar::Scalar::from_canonical_bytes(x.scalar).ok_or("Non-canonical scalar specified")?;
+                        let p = curve25519_dalek::edwards::CompressedEdwardsY(x.point);
+                        let p = p.decompress().ok_or("Cannot decompress ed25519 point")?;
+                        let p2 = p * s;
+                        println!("{}", hex::encode(&p2.compress().to_bytes()[..]));
+                    }
+                    ScalarCmd::EdAdd(x) => {
+                        let p1 = curve25519_dalek::edwards::CompressedEdwardsY(x.point1);
+                        let p2 = curve25519_dalek::edwards::CompressedEdwardsY(x.point2);
+                        let p1 = p1.decompress().ok_or("Cannot decompress ed25519 point")?;
+                        let p2 = p2.decompress().ok_or("Cannot decompress ed25519 point")?;
+                        let p = p1 + p2;
+                        println!("{}", hex::encode(&p.compress().to_bytes()[..]));
+                    }
+                    ScalarCmd::EdSub(x) => {
+                        let p1 = curve25519_dalek::edwards::CompressedEdwardsY(x.point1);
+                        let p2 = curve25519_dalek::edwards::CompressedEdwardsY(x.point2);
+                        let p1 = p1.decompress().ok_or("Cannot decompress ed25519 point")?;
+                        let p2 = p2.decompress().ok_or("Cannot decompress ed25519 point")?;
+                        let p = p1 - p2;
+                        println!("{}", hex::encode(&p.compress().to_bytes()[..]));
                     }
                 }
             }

@@ -1,5 +1,5 @@
 # curve25519tool
-Command-line tool to use curve25519-donna library
+Command-line tool to perform curve25519 / ed25519 operations
 
 Allows to generate private and public keys, derive shared keys (without the hashing step), sign and verify signatures.
 
@@ -30,6 +30,7 @@ Commands:
                     or 1), space-separated
   expand_ed         Extract private key from ed25519 seed value (read from
                     stdin)
+  scalar            Subcommands involving scalars or add/sub
 
 $ curve25519tool gen
 6071c98d7db4d7fead9b9409c06aa39d691c6065d584d2bc2127fb5ecfa18d64
